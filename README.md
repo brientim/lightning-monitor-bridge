@@ -44,7 +44,7 @@ computer first.
      It needs the Visual C++ 2013 (x86) runtime.
    - `auto` (default) uses WinUSB when it's installed, otherwise Boltek's driver.
 
-The download isn't code-signed for Windows yet, so SmartScreen may warn: choose **More info › Run anyway**.
+Until the Windows download is code-signed (see [Code signing policy](#code-signing-policy)), SmartScreen may warn: choose **More info › Run anyway**. A newly signed program can still be warned about until it has built up download reputation.
 
 ## Linux and Raspberry Pi
 
@@ -145,6 +145,25 @@ python packaging/build.py          # this platform's download into dist/release/
 
 Pushing a `v*` tag builds the Windows and Linux downloads on GitHub Actions and attaches them to the
 release. The macOS download is signed and notarised with `packaging/macos/sign-and-notarize.sh`.
+
+## Code signing policy
+
+Windows releases are signed through [SignPath.io](https://signpath.io): free code signing provided by
+SignPath.io, certificate by [SignPath Foundation](https://signpath.org).
+
+- Only release tags built from this repository by GitHub Actions are signed, and only this project's own
+  programs (`lightning-bridge.exe`, `Lightning Monitor Bridge.exe`). Bundled third-party files (Python,
+  libusb) are shipped as their authors built them.
+- Committers and reviewers: [Tim Brien](https://github.com/brientim). Approver for each signing request:
+  [Tim Brien](https://github.com/brientim).
+- macOS releases are signed with the maintainer's Apple Developer ID and notarised by Apple.
+
+## Privacy
+
+Lightning Monitor Bridge doesn't collect or send any information to the developer or to the internet. It
+only talks to the detector it's connected to and, on your local network, to the Lightning Monitor apps
+that connect to it, and it announces itself on the local network with Bonjour (turn this off with
+`advertise: false`). Its log stays on your computer.
 
 ## Licence
 

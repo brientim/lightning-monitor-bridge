@@ -3,6 +3,8 @@
 
   python packaging/build.py            # Windows (32-bit Python), Linux or macOS
   LIBUSB_PATH=... python packaging/build.py   # use a specific libusb library
+  python packaging/build.py --no-archive      # Windows: build dist/lightning-monitor-bridge/ only (to sign it)
+  python packaging/build.py --archive DIR     # Windows: zip a (signed) build folder
 
 Asset names stay the same for every version so https://github.com/brientim/lightning-monitor-bridge/
 releases/latest/download/<asset> always points at the newest build. On macOS, run
@@ -49,7 +51,20 @@ def linux_arch() -> str:
     return {"x86_64": "x86_64", "amd64": "x86_64", "aarch64": "arm64", "arm64": "arm64"}.get(machine, machine)
 
 
+def archive_windows(folder: Path) -> Path:
+    RELEASE.mkdir(parents=True, exist_ok=True)
+    archive = RELEASE / "lightning-monitor-bridge-windows-x86.zip"
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zipped:
+        for path in sorted(folder.rglob("*")):
+            zipped.write(path, Path("lightning-monitor-bridge") / path.relative_to(folder))
+    print("Wrote", archive)
+    return archive
+
+
 def main() -> None:
+    if "--archive" in sys.argv:
+        archive_windows(Path(sys.argv[sys.argv.index("--archive") + 1]))
+        return
     if sys.platform == "win32" and struct.calcsize("P") != 4:
         sys.exit("Build Windows with 32-bit Python, so Boltek's 32-bit LD350_DLL.dll can be used")
     libusb = find_libusb()
@@ -72,20 +87,20 @@ def main() -> None:
         folder = DIST / "lightning-monitor-bridge"
         for extra in extras + [ROOT / "packaging" / "windows" / "README-Windows.txt"]:
             shutil.copy(extra, folder / extra.name)
-        archive = RELEASE / "lightning-monitor-bridge-windows-x86.zip"
-        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zipped:
-            for path in sorted(folder.rglob("*")):
-                zipped.write(path, Path("lightning-monitor-bridge") / path.relative_to(folder))
-    elif sys.platform == "darwin":
+        if "--no-archive" in sys.argv:
+            print("Built", folder)
+        else:
+            archive_windows(folder)
+        return
+    if sys.platform == "darwin":
         print("Built %s; now run packaging/macos/sign-and-notarize.sh" % (DIST / "Lightning Monitor Bridge.app"))
         return
-    else:
-        archive = RELEASE / ("lightning-monitor-bridge-linux-%s.tar.gz" % linux_arch())
-        with tarfile.open(archive, "w:gz") as tarred:
-            base = "lightning-monitor-bridge"
-            tarred.add(DIST / "lightning-bridge", "%s/lightning-bridge" % base)
-            for extra in extras + [ROOT / "packaging" / "linux" / "install.sh", ROOT / "packaging" / "linux" / "99-boltek-ld350.rules"]:
-                tarred.add(extra, "%s/%s" % (base, extra.name))
+    archive = RELEASE / ("lightning-monitor-bridge-linux-%s.tar.gz" % linux_arch())
+    with tarfile.open(archive, "w:gz") as tarred:
+        base = "lightning-monitor-bridge"
+        tarred.add(DIST / "lightning-bridge", "%s/lightning-bridge" % base)
+        for extra in extras + [ROOT / "packaging" / "linux" / "install.sh", ROOT / "packaging" / "linux" / "99-boltek-ld350.rules"]:
+            tarred.add(extra, "%s/%s" % (base, extra.name))
     print("Wrote", archive)
 
 

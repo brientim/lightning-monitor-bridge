@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SignPath artifact configuration "windows" for the Windows build.
+  The GitHub artifact uploaded by the release workflow holds the contents of dist/lightning-monitor-bridge/.
+  Only this project's own programs are signed; bundled third-party DLLs (Python, libusb) are left as shipped.
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file path="lightning-bridge.exe">
+      <authenticode-sign />
+    </pe-file>
+    <pe-file path="Lightning Monitor Bridge.exe">
+      <authenticode-sign />
+    </pe-file>
+  </zip-file>
+</artifact-configuration>

@@ -16,6 +16,10 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
+    env:
+      # Signing runs once the SignPath project exists: secret SIGNPATH_API_TOKEN and variable
+      # SIGNPATH_ORGANIZATION_ID (Settings › Secrets and variables › Actions). Without them the zip is unsigned.
+      HAS_SIGNPATH: ${{ secrets.SIGNPATH_API_TOKEN != '' && vars.SIGNPATH_ORGANIZATION_ID != '' }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -35,10 +39,38 @@ jobs:
           with open(os.environ["GITHUB_ENV"], "a") as env:
               env.write("LIBUSB_PATH=%s\n" % os.path.abspath("libusb/MinGW32/dll/libusb-1.0.dll"))
       - run: python -m pytest -q
-      - run: python packaging/build.py
+      - run: python packaging/build.py --no-archive
+      - id: unsigned
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-unsigned
+          path: dist/lightning-monitor-bridge/
+      - name: Sign with SignPath
+        if: env.HAS_SIGNPATH == 'true'
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'lightning-monitor-bridge' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'release-signing' }}
+          artifact-configuration-slug: windows
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          # Release signing waits for an approver in SignPath.
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: dist/signed
+      - name: Zip
+        shell: bash
+        run: |
+          if [ -d dist/signed ]; then
+            python packaging/build.py --archive dist/signed
+          else
+            echo "::warning::SignPath is not configured; the Windows download is unsigned"
+            python packaging/build.py --archive dist/lightning-monitor-bridge
+          fi
       - uses: actions/upload-artifact@v7
         with:
-          name: windows
+          name: release-windows
           path: dist/release/*
 
   linux:
@@ -57,7 +89,7 @@ jobs:
       - run: python packaging/build.py
       - uses: actions/upload-artifact@v7
         with:
-          name: linux-${{ matrix.runner }}
+          name: release-linux-${{ matrix.runner }}
           path: dist/release/*
 
   macos:
@@ -99,7 +131,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: env.HAS_SIGNING == 'true'
         with:
-          name: macos
+          name: release-macos
           path: dist/release/*
 
   release:
@@ -113,6 +145,7 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           path: assets
+          pattern: release-*
           merge-multiple: true
       - name: Attach to the GitHub release
         env:
