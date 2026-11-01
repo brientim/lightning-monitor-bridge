@@ -16,6 +16,8 @@ It's optional: if the detector is plugged into the Mac that runs Lightning Monit
 
 ## Download
 
+Also on [brien.com.au](https://brien.com.au/apps/lightning-monitor-bridge.html).
+
 | System | Download |
 |---|---|
 | Windows 10 / 11 | [lightning-monitor-bridge-windows-x86.zip](https://github.com/brientim/lightning-monitor-bridge/releases/latest/download/lightning-monitor-bridge-windows-x86.zip) |
