@@ -17,8 +17,8 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           architecture: x86
@@ -36,7 +36,7 @@ jobs:
               env.write("LIBUSB_PATH=%s\n" % os.path.abspath("libusb/MinGW32/dll/libusb-1.0.dll"))
       - run: python -m pytest -q
       - run: python packaging/build.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows
           path: dist/release/*
@@ -47,27 +47,27 @@ jobs:
         runner: [ubuntu-22.04, ubuntu-22.04-arm]
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: sudo apt-get update && sudo apt-get install -y libusb-1.0-0
       - run: python -m pip install ".[tray,dev]"
       - run: python -m pytest -q
       - run: python packaging/build.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-${{ matrix.runner }}
           path: dist/release/*
 
   macos:
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       HAS_SIGNING: ${{ secrets.MACOS_CERTIFICATE_P12 != '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: env.HAS_SIGNING == 'true'
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         if: env.HAS_SIGNING == 'true'
         with:
           python-version: "3.12"
@@ -96,7 +96,7 @@ jobs:
           python -m pytest -q
           python packaging/build.py
           packaging/macos/sign-and-notarize.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: env.HAS_SIGNING == 'true'
         with:
           name: macos
@@ -104,10 +104,13 @@ jobs:
 
   release:
     needs: [windows, linux, macos]
-    if: startsWith(github.ref, 'refs/tags/')
+    # macOS is optional (signing secrets); Windows and Linux must have built.
+    if: >-
+      startsWith(github.ref, 'refs/tags/') && !cancelled() &&
+      needs.windows.result == 'success' && needs.linux.result == 'success'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: assets
           merge-multiple: true
