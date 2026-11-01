@@ -1,0 +1,123 @@
+name: Release
+
+# Builds the downloads when a version tag (v0.1.0 …) is pushed, and attaches them to its GitHub release.
+# macOS is built only when signing secrets are configured (MACOS_CERTIFICATE_P12, MACOS_CERTIFICATE_PASSWORD,
+# MACOS_SIGNING_IDENTITY, NOTARY_KEY_ID, NOTARY_ISSUER_ID, NOTARY_KEY_P8); otherwise build it locally with
+# packaging/build.py and packaging/macos/sign-and-notarize.sh, and upload it with `gh release upload`.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: x86
+      - run: python -m pip install ".[tray,dev]" py7zr
+      - name: 32-bit libusb
+        shell: python
+        run: |
+          import json, os, urllib.request, py7zr
+          release = json.load(urllib.request.urlopen("https://api.github.com/repos/libusb/libusb/releases/latest"))
+          asset = next(a for a in release["assets"] if a["name"].endswith(".7z"))
+          urllib.request.urlretrieve(asset["browser_download_url"], "libusb.7z")
+          with py7zr.SevenZipFile("libusb.7z") as archive:
+              archive.extract("libusb", targets=["MinGW32/dll/libusb-1.0.dll"])
+          with open(os.environ["GITHUB_ENV"], "a") as env:
+              env.write("LIBUSB_PATH=%s\n" % os.path.abspath("libusb/MinGW32/dll/libusb-1.0.dll"))
+      - run: python -m pytest -q
+      - run: python packaging/build.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/release/*
+
+  linux:
+    strategy:
+      matrix:
+        runner: [ubuntu-22.04, ubuntu-22.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y libusb-1.0-0
+      - run: python -m pip install ".[tray,dev]"
+      - run: python -m pytest -q
+      - run: python packaging/build.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.runner }}
+          path: dist/release/*
+
+  macos:
+    runs-on: macos-14
+    env:
+      HAS_SIGNING: ${{ secrets.MACOS_CERTIFICATE_P12 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        if: env.HAS_SIGNING == 'true'
+      - uses: actions/setup-python@v5
+        if: env.HAS_SIGNING == 'true'
+        with:
+          python-version: "3.12"
+      - name: Build, sign and notarise
+        if: env.HAS_SIGNING == 'true'
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          CODESIGN_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+        run: |
+          brew install libusb
+          python -m pip install ".[tray,dev]"
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          security create-keychain -p ci "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p ci "$keychain"
+          echo "$MACOS_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          echo "$NOTARY_KEY_P8" > "$RUNNER_TEMP/notary.p8"
+          export NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8"
+          python -m pytest -q
+          python packaging/build.py
+          packaging/macos/sign-and-notarize.sh
+      - uses: actions/upload-artifact@v4
+        if: env.HAS_SIGNING == 'true'
+        with:
+          name: macos
+          path: dist/release/*
+
+  release:
+    needs: [windows, linux, macos]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Attach to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          ls -la assets
+          if ! gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --title "Lightning Monitor Bridge ${TAG#v}" --generate-notes
+          fi
+          gh release upload "$TAG" assets/* -R "$GITHUB_REPOSITORY" --clobber

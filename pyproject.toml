@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lightning-monitor-bridge"
+description = "Share a Boltek LD-350 or LD-250 lightning detector on the network for Lightning Monitor"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "GPL-3.0-or-later"}
+authors = [{name = "Tim Brien"}]
+dynamic = ["version"]
+dependencies = [
+    "pyftdi>=0.55",
+    "pyserial>=3.5",
+    "zeroconf>=0.131",
+]
+classifiers = [
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Atmospheric Science",
+]
+
+[project.optional-dependencies]
+tray = ["pystray>=0.19", "Pillow>=10", "python-xlib>=0.33; sys_platform == 'linux'"]
+dev = ["pytest>=8", "pyinstaller>=6.10"]
+
+[project.scripts]
+lightning-bridge = "lightning_bridge.cli:main"
+
+[project.gui-scripts]
+lightning-bridge-tray = "lightning_bridge.tray:main_entry"
+
+[project.urls]
+Homepage = "https://github.com/brientim/lightning-monitor-bridge"
+
+[tool.setuptools.dynamic]
+version = {attr = "lightning_bridge.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

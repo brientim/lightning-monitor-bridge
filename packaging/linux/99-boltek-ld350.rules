@@ -1,0 +1,2 @@
+# Boltek LD-350 (FTDI FT2232, custom product ID): let Lightning Monitor Bridge open it without root.
+SUBSYSTEM=="usb", ATTR{idVendor}=="0403", ATTR{idProduct}=="f241", MODE="0666"
