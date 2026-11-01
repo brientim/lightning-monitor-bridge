@@ -238,7 +238,12 @@ class AuthenticationTests(ProxyTestCase):
                     break
                 writer.write(b"A")
                 await asyncio.sleep(0.1)
-            self.assertEqual(await asyncio.wait_for(reader.read(), 1), b"")
+            try:
+                received = await asyncio.wait_for(reader.read(), 1)
+            except ConnectionResetError:
+                # Bytes still in flight when the bridge closes the socket turn its close into a reset.
+                received = b""
+            self.assertEqual(received, b"")
             self.assertEqual(len(self.proxy.clients), 0)
 
     async def test_client_that_never_authenticates_gets_nothing_and_is_dropped_after_the_timeout(self):
