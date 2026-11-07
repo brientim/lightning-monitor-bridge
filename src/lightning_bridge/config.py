@@ -14,6 +14,7 @@ from lightning_bridge import APP_NAME
 
 DETECTORS = ("ld350", "ld250")
 LD350_DRIVERS = ("auto", "libusb", "boltek")
+SQUELCH_SCALES = ("auto", "ld250", "ld350")
 
 
 @dataclass
@@ -35,6 +36,22 @@ class Config:
     #: Paths, only needed when not found automatically.
     libusb: str = ""
     boltek_dll: str = ""
+    #: NexStorm on this PC reads the detector shared by Lightning Monitor on this computer (a Mac).
+    nexstorm_host: str = ""
+    nexstorm_port: int = 10001
+    #: The token set in Lightning Monitor's sharing settings, if it has one.
+    nexstorm_token: str = ""
+    #: Let NexStorm change the detector's settings (squelch, alarms, SAVE ...) for every viewer.
+    nexstorm_allow_settings: bool = False
+    #: NexStorm sends its squelch already on the LD-350's 0-100 scale (its 10 is SQ 76). As a safeguard, "auto"
+    #: turns values up to 15 (only possible on the LD-250's 0-15 scale) into the trigger level with Boltek's table;
+    #: "ld250" always converts, "ld350" never does.
+    nexstorm_squelch_scale: str = "auto"
+    #: NexStorm's folder, only needed when not found automatically.
+    nexstorm_folder: str = ""
+    #: For NexStorm's LD-250 mode: the bridge's end of a virtual COM port pair (e.g. COM11, with NexStorm on COM12).
+    #: Empty: no relay.
+    nexstorm_com_port: str = ""
 
     def validate(self) -> None:
         if self.detector not in DETECTORS:
@@ -43,6 +60,12 @@ class Config:
             raise ValueError("ld350_driver must be one of %s" % ", ".join(LD350_DRIVERS))
         if not 1 <= int(self.port) <= 65535:
             raise ValueError("port must be between 1 and 65535")
+        if not 1 <= int(self.nexstorm_port) <= 65535:
+            raise ValueError("nexstorm_port must be between 1 and 65535")
+        if any(character.isspace() for character in self.nexstorm_host + self.nexstorm_token):
+            raise ValueError("nexstorm_host and nexstorm_token can't contain spaces")
+        if self.nexstorm_squelch_scale not in SQUELCH_SCALES:
+            raise ValueError("nexstorm_squelch_scale must be one of %s" % ", ".join(SQUELCH_SCALES))
 
     @property
     def effective_token(self) -> str | None:

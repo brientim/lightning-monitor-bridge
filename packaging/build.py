@@ -6,6 +6,9 @@
   python packaging/build.py --no-archive      # Windows: build dist/lightning-monitor-bridge/ only (to sign it)
   python packaging/build.py --archive DIR     # Windows: zip a (signed) build folder
 
+On Windows the NexStorm connector (nexstorm/LD350_DLL.dll) is built too, with 32-bit MSVC (an x86 Developer
+Command Prompt, or ilammy/msvc-dev-cmd in CI) or i686-w64-mingw32-gcc; LD350_CONNECTOR_DLL uses a prebuilt one.
+
 Asset names stay the same for every version so https://github.com/brientim/lightning-monitor-bridge/
 releases/latest/download/<asset> always points at the newest build. On macOS, run
 packaging/macos/sign-and-notarize.sh afterwards to sign, notarise and zip the app.
@@ -27,6 +30,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
 RELEASE = DIST / "release"
+SETUP_NAME = "NexStorm Connector Setup.exe"
+#: Also a release asset of its own, for a PC that only runs NexStorm.
+SETUP_ASSET = "nexstorm-connector-setup.exe"
 
 
 def find_libusb() -> str | None:
@@ -51,6 +57,74 @@ def linux_arch() -> str:
     return {"x86_64": "x86_64", "amd64": "x86_64", "aarch64": "arm64", "arm64": "arm64"}.get(machine, machine)
 
 
+def build_nexstorm_connector(output: Path) -> None:
+    """Builds the 32-bit NexStorm connector, a stand-in for Boltek's LD350_DLL.dll, as ``output``."""
+    sys.path.insert(0, str(ROOT / "src"))
+    from lightning_bridge import __version__
+    from lightning_bridge.nexstorm import CONNECTOR_MARKER
+
+    source = ROOT / "nexstorm" / "ld350_connector.c"
+    exports = ROOT / "nexstorm" / "ld350_connector.def"
+    work = ROOT / "build" / "nexstorm"
+    work.mkdir(parents=True, exist_ok=True)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    version = '/DCONNECTOR_VERSION="%s"' % __version__
+    if os.environ.get("LD350_CONNECTOR_DLL"):
+        shutil.copyfile(os.environ["LD350_CONNECTOR_DLL"], output)
+    elif shutil.which("cl"):
+        subprocess.run(
+            ["cl", "/nologo", "/O2", "/MT", "/W3", "/LD", version, str(source), "/Fo%s\\" % work, "/Fe%s" % output,
+             "/link", "/MACHINE:X86", "/DEF:%s" % exports, "/IMPLIB:%s" % (work / "LD350_DLL.lib"), "ws2_32.lib"],
+            check=True, cwd=work,
+        )
+    elif shutil.which("i686-w64-mingw32-gcc"):
+        subprocess.run(
+            ["i686-w64-mingw32-gcc", "-std=c11", "-Os", "-s", "-Wall", "-shared", "-static-libgcc", "-D" + version[2:],
+             "-o", str(output), str(source), str(exports), "-lws2_32"],
+            check=True,
+        )
+    else:
+        sys.exit("The NexStorm connector needs 32-bit MSVC (an x86 Developer Command Prompt) or i686-w64-mingw32-gcc, "
+                 "or set LD350_CONNECTOR_DLL")
+    if CONNECTOR_MARKER not in output.read_bytes():
+        sys.exit("%s is not the NexStorm connector" % output)
+    print("Built the NexStorm connector", output)
+
+
+def build_nexstorm_setup(connector: Path, output: Path) -> None:
+    """Builds NexStorm Connector Setup.exe, which carries ``connector`` and installs it into NexStorm's folder."""
+    sys.path.insert(0, str(ROOT / "src"))
+    from lightning_bridge import __version__
+
+    work = ROOT / "build" / "nexstorm-setup"
+    work.mkdir(parents=True, exist_ok=True)
+    for name in ("connector_setup.rc", "connector_setup.manifest"):
+        shutil.copyfile(ROOT / "nexstorm" / name, work / name)
+    shutil.copyfile(connector, work / "LD350_DLL.dll")
+    source = ROOT / "nexstorm" / "connector_setup.c"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if shutil.which("cl") and shutil.which("rc"):
+        subprocess.run(["rc", "/nologo", '/dCONNECTOR_VERSION_TEXT="%s"' % __version__, "/fo", "setup.res", "connector_setup.rc"],
+                       check=True, cwd=work)
+        subprocess.run(
+            ["cl", "/nologo", "/O2", "/MT", "/W3", '/DCONNECTOR_VERSION="%s"' % __version__, str(source), "setup.res",
+             "/Fo%s\\" % work, "/Fe%s" % output, "/link", "/MACHINE:X86", "/MANIFEST:NO",
+             "advapi32.lib", "shell32.lib", "user32.lib"],
+            check=True, cwd=work,
+        )
+    elif shutil.which("i686-w64-mingw32-gcc"):
+        subprocess.run(["i686-w64-mingw32-windres", '-DCONNECTOR_VERSION_TEXT=\\"%s\\"' % __version__,
+                        "connector_setup.rc", "-O", "coff", "-o", "setup.res"], check=True, cwd=work)
+        subprocess.run(
+            ["i686-w64-mingw32-gcc", "-std=c11", "-Os", "-s", "-Wall", "-static", '-DCONNECTOR_VERSION="%s"' % __version__,
+             "-o", str(output), str(source), str(work / "setup.res"), "-ladvapi32", "-lshell32", "-luser32"],
+            check=True,
+        )
+    else:
+        sys.exit("NexStorm Connector Setup needs 32-bit MSVC (cl and rc) or i686-w64-mingw32-gcc")
+    print("Built", output)
+
+
 def archive_windows(folder: Path) -> Path:
     RELEASE.mkdir(parents=True, exist_ok=True)
     archive = RELEASE / "lightning-monitor-bridge-windows-x86.zip"
@@ -58,6 +132,10 @@ def archive_windows(folder: Path) -> Path:
         for path in sorted(folder.rglob("*")):
             zipped.write(path, Path("lightning-monitor-bridge") / path.relative_to(folder))
     print("Wrote", archive)
+    setup = folder / "nexstorm" / SETUP_NAME
+    if setup.exists():
+        shutil.copyfile(setup, RELEASE / SETUP_ASSET)
+        print("Wrote", RELEASE / SETUP_ASSET)
     return archive
 
 
@@ -87,6 +165,8 @@ def main() -> None:
         folder = DIST / "lightning-monitor-bridge"
         for extra in extras + [ROOT / "packaging" / "windows" / "README-Windows.txt"]:
             shutil.copy(extra, folder / extra.name)
+        build_nexstorm_connector(folder / "nexstorm" / "LD350_DLL.dll")
+        build_nexstorm_setup(folder / "nexstorm" / "LD350_DLL.dll", folder / "nexstorm" / SETUP_NAME)
         if "--no-archive" in sys.argv:
             print("Built", folder)
         else:

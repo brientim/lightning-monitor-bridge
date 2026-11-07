@@ -3,9 +3,11 @@
 bridge's start / stop with a fake detector."""
 
 import asyncio
+import ctypes
 import json
 import plistlib
 import queue
+import struct
 import sys
 import tempfile
 import time
@@ -26,14 +28,34 @@ class FakeFunction:
         return self.implementation(*args)
 
 
+def capture_struct(east=0, north=0, field=0, lts3=b""):
+    """An LD350_CaptureDataType as the DLL fills it: three int[512] arrays, then the LTS-3 block."""
+    samples = devices.CAPTURE_SAMPLES
+    return (
+        struct.pack("<%di" % samples, *[east] * samples)
+        + struct.pack("<%di" % samples, *[north] * samples)
+        + struct.pack("<%di" % samples, *[field] * samples)
+        + lts3.ljust(devices.LTS3_BLOCK_BYTES, b"\0")
+    )
+
+
+def lts3_block():
+    """Centiseconds, counter, frequency, checksum, then the GPS receiver's @@Ha report, serial and "]"."""
+    block = bytearray(devices.LTS3_BLOCK_BYTES)
+    block[10:14] = b"@@Ha"
+    block[-1] = ord("]")
+    return bytes(block)
+
+
 class FakeBoltekDLL:
     """Stands in for LD350_DLL.dll: queued messages and captures, recorded commands."""
 
     def __init__(self, open_result=1):
         self.messages = [b"$WIMLI,12,13,045.0*41", b":VER LD350-V1.13"]
-        self.captures = 2
+        self.captures = [capture_struct(east=0x800, north=0x7FF, field=128)]
         self.commands = []
         self.keep_alives = 0
+        self.raw_data = False
         self.closed = False
         self.open_result = open_result
 
@@ -62,23 +84,51 @@ class FakeBoltekDLL:
     def get_message(self, buffer):
         buffer.value = self.messages.pop(0)
 
-    def capture_ready(self):
-        return self.captures > 0
+    def raw_data_on(self):
+        self.raw_data = True
+        return 1
 
-    def get_capture(self, _buffer):
-        self.captures -= 1
+    def capture_ready(self):
+        return bool(self.captures)
+
+    def get_capture(self, buffer):
+        capture = self.captures.pop(0)
+        ctypes.memmove(buffer, capture, len(capture))
 
 
 class BoltekBackendTests(unittest.TestCase):
     def make(self, dll):
         return devices.LD350BoltekDevice("LD350_DLL.dll", loader=lambda _path: dll)
 
-    def test_reads_messages_as_lines_and_discards_captures(self):
+    def test_turns_on_waveforms_when_opened(self):
         dll = FakeBoltekDLL()
         device = self.make(dll)
-        self.assertEqual(device.read(), b"$WIMLI,12,13,045.0*41\r\n:VER LD350-V1.13\r\n")
-        self.assertEqual(dll.captures, 0)
+        self.assertTrue(dll.raw_data)
+        self.assertTrue(device.waveforms)
+
+    def test_sends_each_capture_as_the_detectors_frame_before_the_lines(self):
+        dll = FakeBoltekDLL()
+        device = self.make(dll)
+        data = device.read()
+        frame = devices.capture_frame(capture_struct(east=0x800, north=0x7FF, field=128))
+        self.assertTrue(data.startswith(frame))
+        self.assertEqual(data[len(frame):], b"$WIMLI,12,13,045.0*41\r\n:VER LD350-V1.13\r\n")
         self.assertEqual(device.read(), b"")
+
+    def test_capture_frame_packs_four_bytes_per_sample_like_the_ld350(self):
+        frame = devices.capture_frame(capture_struct(east=0xABC, north=0x123, field=0x45))
+        self.assertEqual(frame[:5], b"[\x1a\xbc\x45\x23")
+        self.assertEqual(len(frame), 1 + devices.CAPTURE_SAMPLES * 4 + 1)
+        self.assertEqual(frame[-1:], b"]")
+
+    def test_capture_frame_keeps_the_lts3_block_only_when_it_has_a_gps_report(self):
+        block = lts3_block()
+        with_card = devices.capture_frame(capture_struct(lts3=block))
+        self.assertEqual(len(with_card), 1 + devices.CAPTURE_SAMPLES * 4 + devices.LTS3_BLOCK_BYTES)
+        self.assertEqual(with_card[-devices.LTS3_BLOCK_BYTES:], block)
+        without_card = devices.capture_frame(capture_struct())
+        self.assertEqual(without_card[-1:], b"]")
+        self.assertEqual(len(without_card), 1 + devices.CAPTURE_SAMPLES * 4 + 1)
 
     def test_keep_alive_uses_the_dll_call_and_other_lines_are_commands(self):
         dll = FakeBoltekDLL()
@@ -89,7 +139,6 @@ class BoltekBackendTests(unittest.TestCase):
         self.assertEqual(dll.keep_alives, opened_keep_alives + 1)
         self.assertEqual(dll.commands, [b"SQ 49", b"VER"])
         self.assertEqual(device.startup_commands(), [b"VER"])
-        self.assertFalse(device.waveforms)
         device.close()
         self.assertTrue(dll.closed)
 

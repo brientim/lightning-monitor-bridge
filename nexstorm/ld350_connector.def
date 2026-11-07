@@ -1,0 +1,16 @@
+; SPDX-License-Identifier: GPL-3.0-or-later
+; The names Boltek's LD350_DLL.dll exports (MSVC C++ decorated, cdecl), mapped to the connector's C functions.
+LIBRARY LD350_DLL
+EXPORTS
+    ?LD350_Open@@YAHXZ=LD350_Open
+    ?LD350_Close@@YAHXZ=LD350_Close
+    ?LD350_KeepAlive@@YAHXZ=LD350_KeepAlive
+    ?LD350_Command@@YAHPAD@Z=LD350_Command
+    ?LD350_SetTriggerLevel@@YAHE@Z=LD350_SetTriggerLevel
+    ?LD350_ForceTrigger@@YAHXZ=LD350_ForceTrigger
+    ?LD350_RawDataOn@@YAHXZ=LD350_RawDataOn
+    ?LD350_RawDataOff@@YAHXZ=LD350_RawDataOff
+    ?LD350_MessageReady@@YA_NXZ=LD350_MessageReady
+    ?LD350_CaptureReady@@YA_NXZ=LD350_CaptureReady
+    ?LD350_GetMessageData@@YAXPAULD350_MessageDataType@@@Z=LD350_GetMessageData
+    ?LD350_GetCaptureData@@YAXPAULD350_CaptureDataType@@@Z=LD350_GetCaptureData

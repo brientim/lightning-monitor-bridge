@@ -20,3 +20,34 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: python -m pip install -e ".[dev]"
       - run: python -m pytest -q
+  nexstorm-connector:
+    # The Windows build of the NexStorm connector: 32-bit, with the decorated names NexStorm looks up.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64_x86
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          architecture: x86
+      - name: Build
+        shell: python
+        run: |
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "packaging")
+          import build
+          build.build_nexstorm_connector(Path("dist/nexstorm/LD350_DLL.dll"))
+          build.build_nexstorm_setup(Path("dist/nexstorm/LD350_DLL.dll"), Path("dist/nexstorm") / build.SETUP_NAME)
+      - name: Exports
+        shell: bash
+        run: |
+          dumpbin //nologo //exports dist/nexstorm/LD350_DLL.dll | tee exports.txt
+          dumpbin //nologo //headers dist/nexstorm/LD350_DLL.dll | grep -q "14C machine (x86)"
+          for name in Open Close KeepAlive Command SetTriggerLevel ForceTrigger RawDataOn RawDataOff MessageReady CaptureReady GetMessageData GetCaptureData; do
+            grep -q "?LD350_$name@@" exports.txt || { echo "missing LD350_$name"; exit 1; }
+          done
+          dumpbin //nologo //headers "dist/nexstorm/NexStorm Connector Setup.exe" | grep -q "14C machine (x86)"
+          grep -a -q "Lightning Monitor NexStorm Connector" "dist/nexstorm/NexStorm Connector Setup.exe"

@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// NexStorm Connector Setup: the manifest (administrator rights), the connector it installs, and version details.
+// Build with the connector as LD350_DLL.dll in the current folder; CONNECTOR_VERSION_TEXT is the version string.
+#include <windows.h>
+
+#ifndef CONNECTOR_VERSION_TEXT
+#define CONNECTOR_VERSION_TEXT "dev"
+#endif
+
+1 24 "connector_setup.manifest"
+101 RCDATA "LD350_DLL.dll"
+
+1 VERSIONINFO
+FILEVERSION 0,2,0,0
+PRODUCTVERSION 0,2,0,0
+FILEOS 0x40004
+FILETYPE 0x1
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "0c0904b0"
+        BEGIN
+            VALUE "CompanyName", "Tim Brien"
+            VALUE "FileDescription", "Lightning Monitor NexStorm Connector Setup"
+            VALUE "FileVersion", CONNECTOR_VERSION_TEXT
+            VALUE "LegalCopyright", "GPL-3.0-or-later"
+            VALUE "OriginalFilename", "NexStorm Connector Setup.exe"
+            VALUE "ProductName", "Lightning Monitor Bridge"
+            VALUE "ProductVersion", CONNECTOR_VERSION_TEXT
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0c09, 1200
+    END
+END

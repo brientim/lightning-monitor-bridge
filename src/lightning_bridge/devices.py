@@ -19,6 +19,12 @@ from pathlib import Path
 LD350_VID = 0x0403
 LD350_PID = 0xF241
 BOLTEK_DLL_NAME = "LD350_DLL.dll"
+#: In the NexStorm connector, which has Boltek's file name but reads a shared detector instead of USB.
+NEXSTORM_CONNECTOR_MARKER = b"Lightning Monitor NexStorm Connector"
+CAPTURE_SAMPLES = 512
+LTS3_BLOCK_BYTES = 167
+LTS3_OFFSET = 3 * CAPTURE_SAMPLES * 4
+GPS_REPORT_HEADER = b"@@Ha"
 
 
 class DetectorError(Exception):
@@ -52,6 +58,28 @@ def use_libusb(path: str | None) -> None:
     import usb.backend.libusb1
 
     usb.backend.libusb1.get_backend(find_library=lambda _: path)
+
+
+def capture_frame(capture: bytes) -> bytes:
+    """Packs an ``LD350_CaptureDataType`` (``int East[512]``, ``int North[512]``, ``int E_Field[512]``,
+    then the 167-byte LTS-3 block) into the frame the LD-350 sends over USB with ``RAW 1``: ``[``, four
+    bytes per sample, then the LTS-3 block, or ``]`` when the block has no GPS report (no LTS-3 card)."""
+    east = struct.unpack_from("<%di" % CAPTURE_SAMPLES, capture, 0)
+    north = struct.unpack_from("<%di" % CAPTURE_SAMPLES, capture, CAPTURE_SAMPLES * 4)
+    field = struct.unpack_from("<%di" % CAPTURE_SAMPLES, capture, CAPTURE_SAMPLES * 8)
+    frame = bytearray(b"[")
+    for east_value, north_value, field_value in zip(east, north, field):
+        east_value &= 0x0FFF
+        north_value &= 0x0FFF
+        frame += bytes((
+            (north_value >> 8) << 4 | east_value >> 8,
+            east_value & 0xFF,
+            field_value & 0xFF,
+            north_value & 0xFF,
+        ))
+    lts3 = capture[LTS3_OFFSET:LTS3_OFFSET + LTS3_BLOCK_BYTES]
+    frame += lts3 if lts3[10:14] == GPS_REPORT_HEADER else b"]"
+    return bytes(frame)
 
 
 def keep_alive_commands(tick: int) -> list[bytes]:
@@ -108,14 +136,15 @@ class LD350BoltekDevice:
     """An LD-350 through Boltek's own Windows driver and LD350_DLL.dll.
 
     NexStorm and other Boltek software keep working with this driver. The DLL delivers decoded
-    messages but not the raw stream, so waveform captures are discarded and strikes are unclassified.
+    messages and decoded waveform captures rather than the raw stream, so each capture is packed
+    back into the detector's own frame and sent just before the lines that follow it.
     The DLL is 32-bit, so this needs the 32-bit (x86) Windows build.
     """
 
     line_ending = b"\r\n"
     model = "LD-350"
     driver = "boltek"
-    waveforms = False
+    waveforms = True
     message_size = 50
     capture_size = 6400
     # C++ decorated names exported by LD350_DLL.dll (cdecl).
@@ -128,6 +157,7 @@ class LD350BoltekDevice:
         "get_message": "?LD350_GetMessageData@@YAXPAULD350_MessageDataType@@@Z",
         "capture_ready": "?LD350_CaptureReady@@YA_NXZ",
         "get_capture": "?LD350_GetCaptureData@@YAXPAULD350_CaptureDataType@@@Z",
+        "raw_data_on": "?LD350_RawDataOn@@YAHXZ",
     }
 
     def __init__(self, dll_path: str | None = None, loader=None):
@@ -143,11 +173,16 @@ class LD350BoltekDevice:
                 "%s not found. Download Boltek's LD-350 Programmers Toolkit and put the DLL next to the bridge"
                 % BOLTEK_DLL_NAME
             )
+        if is_nexstorm_connector(path):
+            raise DetectorError(
+                "%s is the NexStorm connector, which reads a shared detector, not Boltek's DLL. Put Boltek's "
+                "LD350_DLL.dll next to the bridge (from the Programmers Toolkit, or NexStorm's LD350_DLL.dll.boltek)" % path
+            )
         if os.path.isdir(os.path.dirname(path)) and hasattr(os, "add_dll_directory"):
             os.add_dll_directory(os.path.dirname(os.path.abspath(path)))
         dll = loader(path)
         self.call = {key: dll[name] for key, name in self.names.items()}
-        for key in ("open", "close", "keep_alive", "command"):
+        for key in ("open", "close", "keep_alive", "command", "raw_data_on"):
             self.call[key].restype = ctypes.c_int
         for key in ("message_ready", "capture_ready"):
             self.call[key].restype = ctypes.c_bool
@@ -161,22 +196,25 @@ class LD350BoltekDevice:
             if self.call["open"]() != 1:
                 raise DetectorError("LD350_Open failed: is NexStorm running, or the detector unplugged?")
             self.call["keep_alive"]()
+            self.call["raw_data_on"]()
 
     def read(self) -> bytes:
-        lines = []
+        chunks = []
         with self.lock:
             capture = ctypes.create_string_buffer(self.capture_size)
             while self.call["capture_ready"]():
+                ctypes.memset(capture, 0, self.capture_size)
                 self.call["get_capture"](capture)
+                chunks.append(capture_frame(capture.raw))
             message = ctypes.create_string_buffer(self.message_size)
-            while self.call["message_ready"]() and len(lines) < 100:
+            while self.call["message_ready"]() and len(chunks) < 100:
                 self.call["get_message"](message)
                 text = message.raw.split(b"\0", 1)[0].rstrip(b"\r\n")
                 if text:
-                    lines.append(text + self.line_ending)
-        if not lines:
+                    chunks.append(text + self.line_ending)
+        if not chunks:
             time.sleep(0.01)
-        return b"".join(lines)
+        return b"".join(chunks)
 
     def write(self, data: bytes) -> None:
         for raw in data.replace(b"\r", b"\n").split(b"\n"):
@@ -231,10 +269,17 @@ class LD250Device:
         return []
 
 
+def is_nexstorm_connector(path) -> bool:
+    try:
+        return NEXSTORM_CONNECTOR_MARKER in Path(path).read_bytes()
+    except OSError:
+        return False
+
+
 def find_boltek_dll() -> str | None:
     for folder in (Path(sys.executable).parent, bundle_directory(), Path.cwd()):
         candidate = folder / BOLTEK_DLL_NAME
-        if candidate.exists():
+        if candidate.exists() and not is_nexstorm_connector(candidate):
             return str(candidate)
     return None
 

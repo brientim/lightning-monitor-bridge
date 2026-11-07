@@ -39,6 +39,10 @@ jobs:
           with open(os.environ["GITHUB_ENV"], "a") as env:
               env.write("LIBUSB_PATH=%s\n" % os.path.abspath("libusb/MinGW32/dll/libusb-1.0.dll"))
       - run: python -m pytest -q
+      # 32-bit MSVC for the NexStorm connector (nexstorm/LD350_DLL.dll), which NexStorm (32-bit) loads.
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64_x86
       - run: python packaging/build.py --no-archive
       - id: unsigned
         uses: actions/upload-artifact@v7

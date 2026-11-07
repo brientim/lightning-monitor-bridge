@@ -10,6 +10,9 @@ Commands:
   install-service    start automatically (``--tray`` for the tray app, ``--system`` at boot)
   uninstall-service  stop starting automatically
   service-status     whether it starts automatically
+  nexstorm           NexStorm on this PC reads a detector shared by Lightning Monitor on a Mac:
+                     ``nexstorm connect HOST``, ``nexstorm install``, ``nexstorm restore``, ``nexstorm status``,
+                     ``nexstorm relay --com COM11`` (NexStorm's LD-250 mode through a virtual COM port pair)
 """
 
 from __future__ import annotations
@@ -27,7 +30,8 @@ from pathlib import Path
 from lightning_bridge import APP_NAME, __version__
 from lightning_bridge import config as settings
 
-COMMANDS = ("run", "tray", "devices", "config", "token", "install-service", "uninstall-service", "service-status", "version")
+COMMANDS = ("run", "tray", "devices", "config", "token", "install-service", "uninstall-service", "service-status",
+            "nexstorm", "version")
 
 
 def setup_logging(config_path: Path, verbose: bool = False) -> None:
@@ -102,6 +106,18 @@ def build_parser() -> argparse.ArgumentParser:
     uninstall = commands.add_parser("uninstall-service", help="stop starting automatically")
     uninstall.add_argument("--system", action="store_true")
     commands.add_parser("service-status", help="whether it starts automatically")
+    nexstorm = commands.add_parser("nexstorm", help="NexStorm on this PC reads a detector shared by Lightning Monitor")
+    nexstorm.add_argument("action", nargs="?", choices=("status", "connect", "install", "restore", "relay"), default="status")
+    nexstorm.add_argument("host", nargs="?",
+                          help="connect: the Mac sharing the detector, e.g. My-Mac.local, or this-pc for this bridge's own detector")
+    nexstorm.add_argument("--port", type=int, help="the Mac's sharing port (default 10001)")
+    nexstorm.add_argument("--token", help="the token set in Lightning Monitor's sharing settings")
+    allow = nexstorm.add_mutually_exclusive_group()
+    allow.add_argument("--allow-settings", dest="allow_settings", action="store_true", default=None,
+                       help="let NexStorm change the detector's settings for every viewer")
+    allow.add_argument("--no-allow-settings", dest="allow_settings", action="store_false")
+    nexstorm.add_argument("--folder", help="NexStorm's folder, if not found automatically")
+    nexstorm.add_argument("--com", help="relay: the bridge's end of a virtual COM port pair, e.g. COM11 (NexStorm on the other end, in LD-250 mode)")
     commands.add_parser("version", help="show the version")
     for sub in commands.choices.values():
         sub.add_argument("--config", type=Path, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
@@ -145,6 +161,73 @@ def run_bridge(config: settings.Config) -> None:
         asyncio.run(main())
     except KeyboardInterrupt:
         pass
+
+
+def run_nexstorm(config_path: Path, options) -> None:
+    from lightning_bridge import nexstorm
+
+    config = settings.load(config_path)
+    changed = False
+    if options.host == "this-pc":
+        # The detector on this PC's own USB, shared by this bridge: NexStorm reads it beside the other viewers.
+        options.host = "127.0.0.1"
+        options.port = options.port or config.port
+        options.token = options.token if options.token is not None else config.effective_token or ""
+    for value, key in ((options.folder, "nexstorm_folder"), (options.host, "nexstorm_host"), (options.port, "nexstorm_port"),
+                       (options.token, "nexstorm_token"), (options.allow_settings, "nexstorm_allow_settings"),
+                       (options.com, "nexstorm_com_port")):
+        if value is not None and getattr(config, key) != value:
+            setattr(config, key, value)
+            changed = True
+    if options.host and options.action != "connect":
+        sys.exit("usage: lightning-bridge nexstorm connect HOST [--port PORT] [--token TOKEN]")
+    try:
+        config.validate()
+    except ValueError as error:
+        sys.exit(str(error))
+    if changed or options.action == "connect":
+        settings.save(config, config_path)
+        if config.nexstorm_host:
+            nexstorm.write_settings(config)
+
+    if options.action == "relay":
+        if not config.nexstorm_host or not config.nexstorm_com_port:
+            sys.exit("usage: lightning-bridge nexstorm relay --com COM11 (after: lightning-bridge nexstorm connect HOST)")
+        from lightning_bridge.serial_relay import SerialRelay
+
+        setup_logging(config_path, False)
+        relay = SerialRelay(config)
+        print("Relaying %s:%d to %s for NexStorm's LD-250 mode (Ctrl+C stops)" % (config.nexstorm_host, config.nexstorm_port, config.nexstorm_com_port))
+        try:
+            relay.run()
+        except KeyboardInterrupt:
+            relay.stop()
+        return
+
+    try:
+        if options.action == "connect":
+            if not config.nexstorm_host:
+                sys.exit("usage: lightning-bridge nexstorm connect HOST [--port PORT] [--token TOKEN]")
+            print("NexStorm will read the detector shared at %s:%d. Restart NexStorm if it is running."
+                  % (config.nexstorm_host, config.nexstorm_port))
+            folder = nexstorm.find_nexstorm(config.nexstorm_folder)
+            if folder is None or nexstorm.state(folder) != "installed":
+                print("Then put the connector in NexStorm's folder: lightning-bridge nexstorm install")
+        elif options.action in ("install", "restore"):
+            folder = nexstorm.find_nexstorm(config.nexstorm_folder)
+            if folder is None:
+                sys.exit("NexStorm not found; add --folder with NexStorm's folder")
+            if options.action == "install":
+                if not config.nexstorm_host:
+                    print("Note: no detector set yet; run: lightning-bridge nexstorm connect HOST")
+                print("\n".join(nexstorm.install(folder)))
+                print("Quit NexStorm (if it's running) and start it again.")
+            else:
+                print("\n".join(nexstorm.restore(folder)))
+        else:
+            print("\n".join(nexstorm.describe(config)))
+    except nexstorm.NexStormError as error:
+        sys.exit(str(error))
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -204,6 +287,9 @@ def main(argv: list[str] | None = None) -> None:
                 print(service.status())
         except (PermissionError, OSError) as error:
             sys.exit(str(error))
+        return
+    if command == "nexstorm":
+        run_nexstorm(config_path, options)
         return
 
     setup_logging(config_path, getattr(options, "verbose", False))
